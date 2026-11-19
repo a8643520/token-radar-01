@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Launch Radar radar-5 — shrunk size curve, netted farm plans</title>
+<title>Token Launch Radar radar-7 — fitted size curve, netted farm plans</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -12,9 +12,10 @@
     <div class="logo">R</div>
     <div>
       <h1>Token Launch Radar</h1>
-      <p class="tag">radar-5 · shrunk size curve tested blind · netted farm plans · every protocol accounted for</p>
+      <p class="tag">radar-7 · fitted size curve tested blind · netted farm plans · every protocol accounted for</p>
     </div>
   </div>
+  {{PAGE_BADGE}}
 </header>
 <section class="kpis" aria-label="Key numbers">{{KPI_STRIP}}</section>
 <section class="acct" aria-label="Accounting">{{ACCOUNTING_BAR}}</section>
@@ -26,37 +27,44 @@
 </nav>
 <main>
   <section id="board">
+    <div class="strip">
+      <div class="strip-formula">
+        <h2>How a value is built</h2>
+        {{FORMULA_STRIP}}
+      </div>
+      <div class="strip-chart">
+        <h2>Market cap against TVL</h2>
+        {{SCATTER_SVG}}
+      </div>
+    </div>
     <div class="farms-strip"><span class="farms-label">Best farms by $/hour at $1,000:</span> <span id="best-farms">{{BEST_FARMS}}</span></div>
     <div class="controls">
       <label>Search <input type="search" id="q" placeholder="name or slug"></label>
       <label>Category <select id="cat"></select></label>
       <label>Chain <select id="chain"></select></label>
-      <label>Verdict <select id="verdict"><option value="">All verdicts</option><option>FARM</option><option>THIN</option><option>MARGINAL</option><option>SKIP</option></select></label>
       <label>Deposit <select id="deposit"><option value="1000">$1,000</option><option value="10000">$10,000</option></select></label>
       <label>Drop share <select id="drop"><option value="0.05">5%</option><option value="0.1" selected>10%</option><option value="0.2">20%</option></select></label>
       <label><input type="checkbox" id="watch"> Watchlist only</label>
       <label>Sort <select id="sort"><option value="rank">Rank</option><option value="tvl">TVL</option><option value="implied">Implied value</option><option value="growth">7d growth</option><option value="age">Age</option><option value="net">Net</option><option value="perhour">Net/hour</option><option value="name">Name</option></select></label>
       <span class="count" id="count"></span>
     </div>
+    <div class="chips" id="chips">{{VERDICT_CHIPS}}</div>
     <div class="layout">
       <div class="board-wrap">
         <table id="board-table">
           <thead><tr>
-            <th data-k="rank">#</th><th data-k="name">Protocol</th><th data-k="tvl" class="num">TVL</th><th data-k="growth" class="num">7D</th><th data-k="age" class="num">No token for</th><th data-k="implied" class="num">Implied value</th><th data-k="slice" class="num">$1K slice</th><th data-k="net" class="num">Net of all costs</th><th data-k="be" class="num">Break-even</th><th data-k="perhour" class="num">Net/hour</th><th data-k="verdict">Farm verdict</th>
+            <th data-k="rank">#</th><th data-k="name">Protocol</th><th data-k="tvl" class="num">TVL</th><th data-k="growth" class="num">7D</th><th data-k="age" class="num">No token for</th><th data-k="implied" class="num">Implied value</th><th data-k="plan">Farm plan</th><th data-k="netlaunch" class="num">Net if launch</th><th data-k="verdict">Farm verdict</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
-      <aside class="detail" id="detail">
-        <h2>Pick a protocol</h2>
-        <p class="note">Click a row to see its value breakdown, its rank range, and its seven-step farm plan with every cost netted to the dollar.</p>
-      </aside>
+      <aside class="detail" id="detail">{{VALIDATION_PANEL}}</aside>
     </div>
   </section>
   <section id="live" hidden>
     <div class="live">
       <h2>Live tokens — all 416, at the market's own value</h2>
-      <p class="note">These protocols already have a token, so the board does not rank them: their market cap is the market's own verdict, not a model's. “Trades” means the market cap and TVL are both in the snapshot, the 95 the curve is fitted on; 33 more trade but record no listing date, so the fit leaves them out and the scatter shows them as hollow dots. “On record” means a token is recorded — a CoinGecko id or a symbol — but no market cap the curve can price.</p>
+      <p class="note">These protocols already have a token, so the board does not rank them: their market cap is the market's own verdict, not a model's. “Trades” means the market cap and TVL are both in the snapshot, the 128 the curve is fitted on. “On record” means a token is recorded — a CoinGecko id or a symbol — but no market cap the curve can price.</p>
       <table>
         <thead><tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">Mcap / TVL</th><th>Status</th></tr></thead>
         <tbody id="live-rows"></tbody>
@@ -76,24 +84,16 @@
   <section id="model" hidden>
     <div class="model">
       <h2>Model — what it is, and how it was tested</h2>
-      <div class="panels">
-        <div class="panel formula-panel">
-          <h2>How a value is built</h2>
-          {{FORMULA_PANEL}}
-        </div>
-        <div class="panel chart-wrap">
-          <h2>Market cap against TVL</h2>
-          {{SCATTER_SVG}}
-          <p class="note">The 95 traded tokens the curve is fitted on (grey dots) and the 33 traded tokens left out of the fit — they record no listing date (hollow dots), the fitted curve (teal line) with the middle half of traded tokens around it (shaded band, P25–P75 of actual / fitted), and the board's implied values overlaid (teal diamonds). Log-log. A protocol far above the band trades rich for its size; the board's diamonds sit on the curve by construction.</p>
-        </div>
-      </div>
+      {{JUDGE_NOTE}}
+      <h3>How a value is built</h3>
+      {{FORMULA_PANEL}}
       {{MODEL_TABLES}}
       <h3>Exclusion rules</h3>
       {{EXCLUSION_RULES}}
       <h3>Farm economics</h3>
-      <p class="note">Reference deposit $1,000. Slice = 10% airdrop × implied value × deposit / TVL: the launch is assumed to airdrop 10% of supply to farmers, split pro-rata by TVL share. Net = slice − gas − forgone T-bill yield (5% a year over the hold). Gas is priced per action at mainnet-era rates — $3 to set up, $5 to deposit, $3 for a second use, $2 a week to hold, $3 to claim — so $22–$32 a plan; on a cheap L2 the same plan costs a few dollars, and a plan that nets positive at these rates nets more there. Break-even = total cost / slice: the launch odds at which the plan pays for itself; above 100% the plan never pays, whatever the odds. Verdict: FARM when net ≥ $25, THIN at $5–$25, MARGINAL at $0–$5, SKIP when negative. The deposit and drop-share filters recompute the slice, the net, the break-even and the verdict live; the seven steps are the $1,000 plan, with each step's own cost and time stated.</p>
+      <p class="note">Reference deposit $1,000. Slice = 10% airdrop × implied value × deposit / TVL. Net = slice − gas − forgone T-bill yield (5% a year over the hold). Break-even = total cost / slice: the launch odds at which the plan pays for itself; above 100% it never pays. Verdict: FARM when net ≥ $25, THIN at $5–$25, MARGINAL at $0–$5, SKIP when negative. The deposit and drop-share filters recompute the slice, the net, the break-even and the verdict live; the seven steps are the $1,000 plan, with each step's own cost and time stated. Gas is priced at mainnet-era rates ($3 to set up, $5 to deposit, $3 for a second use, $2 a week, $3 to claim) — on an L2 the same plan only costs less, so this is the conservative figure, not a low one.</p>
       <h3>What the model does not claim</h3>
-      <p class="note">An implied value is the market cap a protocol would carry if it traded at the fitted curve — not a prediction that a token will launch, and not a promise that a farm pays. The leave-one-out miss is ×2.83: a single protocol's value is uncertain by a factor of three either way, and the rank ranges say the same. 52 of 196 rows are FARM at $1,000; most of the rest are SKIP because a $1,000 slice of a big protocol is a few dollars and gas eats it; the $10,000 deposit filter shows the same plans at a size where more of them pay.</p>
+      <p class="note">An implied value is the market cap a protocol would carry if it traded at the fitted curve — not a prediction that a token will launch, and not a promise that a farm pays. The leave-one-out miss is ×3.64: a single protocol's value is uncertain by a factor of four either way, and the rank ranges say the same. Most rows are SKIP or THIN at $1,000 because a $1,000 slice of a big protocol is a few dollars and gas eats it; the $10,000 deposit filter shows the same plans at a size where they start to pay.</p>
     </div>
   </section>
 </main>

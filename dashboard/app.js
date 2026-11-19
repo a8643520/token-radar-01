@@ -84,16 +84,15 @@
     tb.innerHTML = list.map(function (r) {
       var e = econ(r);
       var g = r.change_7d === null ? '<span>—</span>' : '<span class="' + (r.change_7d >= 0 ? 'pos' : 'neg') + '">' + fmtPct(r.change_7d) + '</span>';
+      var plan = '<b>' + esc(r.plan_label || 'Deposit USDC') + '</b><br><span class="range">' + esc(r.chains[0] || '—') + ' · ' + money2(e.total) + ' · ' + e.hold + 'd</span>';
       return '<tr data-slug="' + esc(r.slug) + '"' + (state.sel === r.slug ? ' class="sel"' : '') + '>' +
         '<td>' + r.rank + '</td>' +
-        '<td><b>' + esc(r.name) + '</b> ' + badge(r) + '<br><span class="slug">' + esc(r.slug) + '</span></td>' +
+        '<td><b>' + esc(r.name) + '</b><br><span class="slug">' + esc(r.slug) + '</span> ' + badge(r) + '</td>' +
         '<td class="num">' + fmtUsd(r.tvl_usd) + '</td><td class="num">' + g + '</td>' +
         '<td class="num">' + fmtAge(r.age_days) + '</td>' +
         '<td class="num implied">' + fmtUsd(r.implied_value_usd) + '<br><span class="range">#' + r.rank_range[0] + '–' + r.rank_range[1] + '</span></td>' +
-        '<td class="num">' + money2(e.slice) + '</td>' +
-        '<td class="num ' + (e.net >= 0 ? 'pos' : 'neg') + '">' + signed(e.net) + '</td>' +
-        '<td class="num">' + fmtBe(e.be) + '</td>' +
-        '<td class="num ' + (e.perHour >= 0 ? 'pos' : 'neg') + '">' + signed(e.perHour) + '/h</td>' +
+        '<td>' + plan + '</td>' +
+        '<td class="num ' + (e.net >= 0 ? 'pos' : 'neg') + '">' + signed(e.net) + '<br><span class="range">' + signed(e.perHour) + '/h</span></td>' +
         '<td>' + verdictPill(e.verdict) + '</td></tr>';
     }).join('');
     document.getElementById('count').textContent = list.length + ' of ' + rows.length + ' shown';
@@ -102,12 +101,32 @@
     });
   }
 
+  // The verdict chips above the board: counts recomputed at the current
+  // deposit and drop share; clicking one filters the board to that verdict
+  // (Watchlist filters to the watchlist instead).
+  function renderChips() {
+    var counts = { ALL: rows.length, WATCHLIST: 0, FARM: 0, THIN: 0, MARGINAL: 0, SKIP: 0 };
+    rows.forEach(function (r) {
+      if (watchlist.has(r.slug)) counts.WATCHLIST++;
+      counts[econ(r).verdict]++;
+    });
+    var map = { '': 'ALL', watchlist: 'WATCHLIST', FARM: 'FARM', THIN: 'THIN', MARGINAL: 'MARGINAL', SKIP: 'SKIP' };
+    document.querySelectorAll('#chips .chip').forEach(function (chip) {
+      var key = map[chip.getAttribute('data-verdict')] || 'ALL';
+      var label = chip.textContent.replace(/ \d+$/, '');
+      chip.innerHTML = label + ' <b>' + counts[key] + '</b>';
+      var active = (chip.getAttribute('data-verdict') === state.verdict && !state.watchOnly) ||
+        (chip.getAttribute('data-verdict') === 'watchlist' && state.watchOnly);
+      chip.classList.toggle('active', active);
+    });
+  }
+
   function renderBestFarms() {
-    var top = rows.slice().sort(function (a, b) { return econ(b).perHour - econ(a).perHour; }).slice(0, 5);
+    var top = rows.slice().sort(function (a, b) { return econ(b).perHour - econ(a).perHour; }).slice(0, 3);
     document.getElementById('best-farms').innerHTML = top.map(function (r) {
       var e = econ(r);
-      return '<span class="farm-pick"><b>' + esc(r.name) + '</b> ' + signed(e.net) + ' net \u00b7 ' + signed(e.perHour) + '/hour \u00b7 slice ' + money2(e.slice) + '</span>';
-    }).join('');
+      return '<span class="farm-pick"><b>' + esc(r.name) + '</b> ' + signed(e.net) + ' net \u00b7 ' + signed(e.perHour) + '/hour</span>';
+    }).join('') + '<span class="farm-more">and ' + (rows.length - 3) + ' more</span>';
   }
 
   function renderLive() {
@@ -135,7 +154,7 @@
     var el = document.getElementById('detail');
     el.innerHTML =
       '<h2>' + esc(r.name) + '</h2>' +
-      '<p class="sub">Rank #' + r.rank + ' (bootstrap p10–p90: #' + r.rank_range[0] + '–' + r.rank_range[1] + ') · ' + esc(r.category || 'Uncategorized') + ' · ' + esc(r.chains.join(', ') || '—') + ' ' + badge(r) + '</p>' +
+      '<p class="sub">Rank #' + r.rank + ' (bootstrap p2.5–p97.5: #' + r.rank_range[0] + '–' + r.rank_range[1] + ') · ' + esc(r.category || 'Uncategorized') + ' · ' + esc(r.chains.join(', ') || '—') + ' ' + badge(r) + '</p>' +
       '<dl class="kv">' +
       '<dt>Implied value</dt><dd class="implied">' + fmtUsd(r.implied_value_usd) + '</dd>' +
       '<dt>TVL</dt><dd>' + fmtUsd(r.tvl_usd) + '</dd>' +
@@ -160,7 +179,7 @@
       '<h3>Seven steps — the $1,000 plan</h3>' +
       '<ol class="steps">' + r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>' +
       '<h3>Why this rank</h3>' +
-      '<p class="note">Implied value ' + fmtUsd(r.implied_value_usd) + ' follows from this protocol\u2019s own snapshot figures: ' + fmtUsd(r.tvl_usd) + ' TVL on a curve that prices a protocol of this size at a ' + r.fitted_multiple.toFixed(2) + 'x multiple, ' + fmtPct(r.change_7d) + ' over 7 days, ' + fmtAge(r.age_days) + ' with no token recorded, across ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') + '. The rank range is the p10–p90 of 200 refits of the same curve on resampled traded tokens. It is this radar\u2019s claim, not a prediction that a token will launch.</p>';
+      '<p class="note">Implied value ' + fmtUsd(r.implied_value_usd) + ' follows from this protocol\u2019s own snapshot figures: ' + fmtUsd(r.tvl_usd) + ' TVL on a curve that prices a protocol of this size at a ' + r.fitted_multiple.toFixed(2) + 'x multiple, ' + fmtPct(r.change_7d) + ' over 7 days, ' + fmtAge(r.age_days) + ' with no token recorded, across ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') + '. The rank range is the p2.5–p97.5 of 200 refits of the same curve on resampled traded tokens. It is this radar\u2019s claim, not a prediction that a token will launch.</p>';
     renderBoard();
   }
 
@@ -183,22 +202,30 @@
     document.getElementById('q').addEventListener('input', function (e) { state.q = e.target.value; renderBoard(); });
     document.getElementById('cat').addEventListener('change', function (e) { state.cat = e.target.value; renderBoard(); });
     document.getElementById('chain').addEventListener('change', function (e) { state.chain = e.target.value; renderBoard(); });
-    document.getElementById('verdict').addEventListener('change', function (e) { state.verdict = e.target.value; renderBoard(); });
-    document.getElementById('deposit').addEventListener('change', function (e) { state.deposit = Number(e.target.value); renderBoard(); renderBestFarms(); if (state.sel) select(state.sel); });
-    document.getElementById('drop').addEventListener('change', function (e) { state.drop = Number(e.target.value); renderBoard(); renderBestFarms(); if (state.sel) select(state.sel); });
-    document.getElementById('watch').addEventListener('change', function (e) { state.watchOnly = e.target.checked; renderBoard(); });
+    document.getElementById('deposit').addEventListener('change', function (e) { state.deposit = Number(e.target.value); renderBoard(); renderBestFarms(); renderChips(); if (state.sel) select(state.sel); });
+    document.getElementById('drop').addEventListener('change', function (e) { state.drop = Number(e.target.value); renderBoard(); renderBestFarms(); renderChips(); if (state.sel) select(state.sel); });
+    document.getElementById('watch').addEventListener('change', function (e) { state.watchOnly = e.target.checked; if (e.target.checked) state.verdict = ''; renderBoard(); renderChips(); });
     document.getElementById('sort').addEventListener('change', function (e) { state.sort = e.target.value; renderBoard(); });
+    document.querySelectorAll('#chips .chip').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var v = chip.getAttribute('data-verdict');
+        if (v === 'watchlist') { state.watchOnly = true; state.verdict = ''; document.getElementById('watch').checked = true; }
+        else { state.verdict = v; state.watchOnly = false; document.getElementById('watch').checked = false; }
+        renderBoard(); renderChips();
+      });
+    });
     document.querySelectorAll('.views button').forEach(function (b) {
       b.addEventListener('click', function () { setView(b.getAttribute('data-view')); });
     });
     document.querySelectorAll('#board-table thead th').forEach(function (th) {
       th.addEventListener('click', function () {
         var k = th.getAttribute('data-k');
-        state.sort = { rank: 'rank', name: 'name', tvl: 'tvl', growth: 'growth', age: 'age', implied: 'rank', slice: 'net', net: 'net', be: 'net', perhour: 'perhour', verdict: 'net' }[k] || 'rank';
+        state.sort = { rank: 'rank', name: 'name', tvl: 'tvl', growth: 'growth', age: 'age', implied: 'implied', plan: 'net', netlaunch: 'net', verdict: 'net' }[k] || 'rank';
         document.getElementById('sort').value = state.sort;
         renderBoard();
       });
     });
+    renderChips();
   }
 
   function initFromQuery() {
@@ -206,7 +233,7 @@
     var f = p.get('filter');
     if (f === 'watchlist') { state.watchOnly = true; document.getElementById('watch').checked = true; }
     else if (f && f.indexOf('category:') === 0) { state.cat = f.slice(9); document.getElementById('cat').value = state.cat; }
-    if (p.get('verdict')) { state.verdict = p.get('verdict'); document.getElementById('verdict').value = state.verdict; }
+    if (p.get('verdict')) { state.verdict = p.get('verdict'); renderChips(); }
     if (p.get('view') === 'live') setView('live');
     else if (p.get('view') === 'excluded') setView('excluded');
     else if (p.get('view') === 'model') setView('model');
