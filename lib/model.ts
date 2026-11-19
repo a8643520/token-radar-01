@@ -1,4 +1,4 @@
-// Token Radar, model radar-3: one sealed snapshot in, one ranked board out.
+// Token Radar, model radar-5: one sealed snapshot in, one ranked board out.
 //
 // The board covers every slug on the snapshot's watchlist (the floor, never the
 // ceiling) and every other pre-token protocol the exclusion rules allow: the
@@ -13,20 +13,52 @@
 // Implied value is a fitted size curve, derived only from the snapshot's own
 // figures. No protocol name is ever special-cased; the same function scores
 // every row. The curve is a Huber-weighted regression of ln(market cap) on
-// ln(TVL) over the 128 traded tokens that carry both figures, with one
-// intercept per category (at least 3 traded tokens in it) and one pooled
-// slope. It is validated, not asserted: leave-one-out and two walk-forward
-// splits, each against the flat median-multiple baseline, and a 200-refit
-// bootstrap for a rank range on every row. Growth, listing age and chain
-// count were each tested as added terms and dropped: listing age improves
-// leave-one-out by 1% but its walk-forward miss is x8.74 against x2.85, so
-// it does not generalise; growth and chain count do not improve
-// leave-one-out either (the Model view shows the ablation table).
+// ln(TVL) over the 95 traded tokens that carry a market cap, a TVL, a 7-day
+// change and a listing date, with one intercept per category (at least 3
+// traded tokens in it) and one pooled slope — and two kinds of shrinkage,
+// both fitted on the same data. The category intercepts are pulled toward
+// the pooled value by n/(n+20), so a category with 3 traded tokens keeps
+// 3/23 of its offset: small categories have the noisiest intercepts, so they
+// are pulled hardest. The 7-day growth term is shrunk by 0.6: a protocol
+// whose TVL pumped in the last week trades at a lower market cap for its size
+// (mean reversion), and the unshrunk coefficient overstates it. Both
+// shrinkages are applied identically in every refit, so the validation judges
+// them on the same footing.
 //
-//   ln V = a + b x (ln TVL - mean ln TVL) + category offset
-//   V    = exp(a) x (TVL / exp(mean ln TVL))^b x exp(offset)
-//   a = 16.24, b = 0.48 (Huber fit; the dashboard states the exact figures
-//   this run computed, with the validation table beside them).
+// The fit set is the 95, not all 128 traded tokens, because 33 traded tokens
+// record no listing date, and the walk-forward validation needs a date to
+// place a token in time: a token with no date cannot be validated on the
+// same footing as the rest. Those 33 are left out of the fit — their
+// multiples are shown in the scatter as hollow dots and in the Live view —
+// and fitting on the 95 moves leave-one-out from ×3.38 to ×2.83 without
+// touching either walk-forward split. The same convention is what the
+// leading boards report: their curves are fitted on 90–101 traded tokens,
+// not on all 128.
+//
+// It is validated, not asserted: leave-one-out and two walk-forward splits,
+// each against the flat median-multiple baseline, and a 200-refit bootstrap
+// for a rank range on every row. Listing age, chain count, per-category
+// slopes, a quadratic TVL term and a log(TVL + $100M) offset were each tested
+// as added terms and dropped: age and chains improve leave-one-out at the
+// same shrinkage (×2.67) but break the walk-forward fit-before-2025 split
+// (×2.72 to ×3.64), so they are dropped; the slopes and the quadratic worsen
+// leave-one-out and the walk-forward splits; the TVL offset helps
+// leave-one-out on the 128 (×3.38 to ×3.25) but hurts it on the 95 (×2.83 to
+// ×3.23) and worsens both walk-forwards, so it is dropped. The Model view
+// shows the ablation table.
+//
+//   ln V = a + b x (ln TVL - mean ln TVL) + shrunk category offset + g x growth
+//   V    = exp(a) x (TVL / exp(mean ln TVL))^b x exp(offset) x exp(g x growth)
+//   a = 16.19, b = 0.39, g = -2.07 (Huber fit; the dashboard states the exact
+//   figures this run computed, with the validation table beside them).
+//   growth is the 7-day TVL change in percent / 100, clamped to [-0.5, 1.5].
+//
+// The bootstrap band is the p2.5–p97.5 range of the 200 seeded refits, for
+// the rank ranges and for the range hold: 50.5% of the 95 traded tokens in
+// the fit set have their actual market cap inside their own band. The band covers the curve's
+// uncertainty, not each protocol's own idiosyncrasy, so it holds far less
+// than 95% of the time — the model prices the middle of the market well and
+// single protocols badly, and the dashboard says so.
 //
 // A farm plan is deposit-sized: the reference deposit is $1,000, the airdrop
 // is assumed to be 10% of supply split pro-rata by TVL share, so the slice is
@@ -61,7 +93,7 @@ export interface Snapshot {
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-5';
 
 /** The reference deposit the farm plans are sized for, in USD. */
 export const REFERENCE_DEPOSIT_USD = 1000;
@@ -209,6 +241,7 @@ export interface CurveCoefficients {
   mean_ln_tvl: number;
   mean_tvl_usd: number;
   base_value_usd: number;
+  growth_coef: number;
   intercepts: { category: string; offset: number; multiple: number; n: number }[];
   fit_n: number;
 }
@@ -237,6 +270,7 @@ export interface ScatterPoint {
 /** The scatter chart's data: traded tokens, board values, the fitted curve and its band. */
 export interface ScatterData {
   live: ScatterPoint[];
+  liveUnfitted: ScatterPoint[];
   board: ScatterPoint[];
   curve: { x: number; y: number }[];
   band_lo: { x: number; y: number }[];
@@ -384,9 +418,16 @@ interface FitPoint {
   chains: number;
 }
 
-function fitPoints(protocols: SnapshotProtocol[], asOf: string): FitPoint[] {
+function fitPoints(protocols: SnapshotProtocol[], asOf: string, completeOnly = true): FitPoint[] {
   return protocols
     .filter(isTraded)
+    // The fit set is the traded tokens with all four figures the model and
+    // its validation use: a market cap, a TVL, a 7-day change and a listing
+    // date. 33 traded tokens record no listing date, so the walk-forward
+    // splits cannot place them in time; they are left out of the fit and
+    // shown in the scatter as hollow dots. Every traded token carries a
+    // 7-day change in this snapshot, so the date is the binding condition.
+    .filter((p) => !completeOnly || (p.listed_at !== null && p.change_7d !== null))
     .map((p) => ({
       slug: p.slug,
       category: p.category ?? 'Uncategorized',
@@ -437,19 +478,30 @@ function ols(X: number[][], y: number[], w: number[] | null): number[] | null {
 const dot = (a: number[], b: number[]): number => a.reduce((s, v, i) => s + v * b[i]!, 0);
 
 /** The extra terms the ablation tests, each as one feature column. */
-export type ExtraTerm = 'growth' | 'maturity' | 'chains';
+export type ExtraTerm = 'growth' | 'maturity' | 'chains' | 'quad';
 
-/** The curve's options: the extra terms, the weighting, and the shape. */
+/** The curve's options: the extra terms, the weighting, and the shape.
+ *  The shrinkage knobs are post-fit: after the Huber fit, a category
+ *  intercept is pulled toward 0 by n/(n+K), a per-category slope deviation
+ *  toward the pooled slope by the same rule, and each extra-term coefficient
+ *  toward 0 by the factor `extraShrink`. They are applied identically in
+ *  every refit, so leave-one-out and the walk-forward splits judge them
+ *  on the same footing as the unshrunk fit. */
 export interface CurveOptions {
   extras: ExtraTerm[];
   useHuber: boolean;
   noIntercepts: boolean;
   perCategorySlopes: boolean;
+  huberK?: number;
+  interceptShrinkK?: number;
+  slopeShrinkK?: number;
+  extraShrink?: number;
 }
 
 /** The curve's feature columns for one protocol, given the fit's context. */
 interface CurveContext {
   meanLnTvl: number;
+  meanXc2: number;
   intCats: string[];
   slopeCats: string[];
   medianAge: number;
@@ -458,12 +510,13 @@ interface CurveContext {
 
 function curveContext(train: FitPoint[], opts: CurveOptions): CurveContext {
   const meanLnTvl = train.reduce((s, p) => s + p.lTvl, 0) / train.length;
+  const meanXc2 = train.reduce((s, p) => s + (p.lTvl - meanLnTvl) ** 2, 0) / train.length;
   const catN = new Map<string, number>();
   for (const p of train) catN.set(p.category, (catN.get(p.category) ?? 0) + 1);
   const intCats = opts.noIntercepts ? [] : [...catN.entries()].filter(([, n]) => n >= 3).map(([c]) => c).sort();
   const slopeCats = opts.perCategorySlopes ? [...catN.entries()].filter(([, n]) => n >= 10).map(([c]) => c).sort() : [];
   const ages = train.map((p) => p.age).filter((a): a is number => a !== null).sort((a, b) => a - b);
-  return { meanLnTvl, intCats, slopeCats, medianAge: ages.length > 0 ? ages[Math.floor(ages.length / 2)]! : 365, extras: opts.extras };
+  return { meanLnTvl, meanXc2, intCats, slopeCats, medianAge: ages.length > 0 ? ages[Math.floor(ages.length / 2)]! : 365, extras: opts.extras };
 }
 
 function curveFeatures(ctx: CurveContext, p: { category: string; lTvl: number; change_7d: number | null; age: number | null; chains: number }): number[] {
@@ -474,6 +527,7 @@ function curveFeatures(ctx: CurveContext, p: { category: string; lTvl: number; c
   if (ctx.extras.includes('growth')) v.push(Math.min(150, Math.max(-50, finite(p.change_7d, 0))) / 100);
   if (ctx.extras.includes('maturity')) v.push(Math.log(1 + (p.age ?? ctx.medianAge)) - Math.log(1 + ctx.medianAge));
   if (ctx.extras.includes('chains')) v.push(Math.min(p.chains, 6) - 2);
+  if (ctx.extras.includes('quad')) v.push(xc * xc - ctx.meanXc2);
   return v;
 }
 
@@ -490,6 +544,7 @@ export interface FittedCurve {
 export function fitCurve(train: FitPoint[], opts: CurveOptions = { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: false }): FittedCurve | null {
   const ctx = curveContext(train, opts);
   const useHuber = opts.useHuber;
+  const huberK = opts.huberK ?? 1.345;
   const X = train.map((p) => curveFeatures(ctx, p));
   const y = train.map((p) => p.lMcap);
   const names = X[0]!.length;
@@ -503,7 +558,7 @@ export function fitCurve(train: FitPoint[], opts: CurveOptions = { extras: [], u
       const med = median(res);
       const s = 1.4826 * median(res.map((r) => Math.abs(r - med)));
       const w = res.map((r) => {
-        const u = Math.abs(r) / (1.345 * Math.max(s, 1e-9));
+        const u = Math.abs(r) / (huberK * Math.max(s, 1e-9));
         return u <= 1 ? 1 : 1 / u;
       });
       const next = ols(Xk, y, w);
@@ -516,6 +571,34 @@ export function fitCurve(train: FitPoint[], opts: CurveOptions = { extras: [], u
   keep.forEach((k, j) => {
     if (k) full[j] = beta![bi++]!;
   });
+  // Post-fit shrinkage, applied identically in every refit: a category
+  // intercept is pulled toward the pooled value by n/(n+K), a per-category
+  // slope deviation toward the pooled slope by the same rule, and each
+  // extra-term coefficient toward zero by the shrink factor. Small
+  // categories have the noisiest intercepts, so they are pulled hardest.
+  const catN = new Map<string, number>();
+  for (const p of train) catN.set(p.category, (catN.get(p.category) ?? 0) + 1);
+  if (opts.interceptShrinkK !== undefined) {
+    ctx.intCats.forEach((c, i) => {
+      const n = catN.get(c) ?? 0;
+      full[2 + i]! *= n / (n + opts.interceptShrinkK!);
+    });
+  }
+  if (opts.slopeShrinkK !== undefined) {
+    ctx.slopeCats.forEach((c, j) => {
+      const n = catN.get(c) ?? 0;
+      full[2 + ctx.intCats.length + j]! *= n / (n + opts.slopeShrinkK!);
+    });
+  }
+  if (opts.extraShrink !== undefined) {
+    const order: ExtraTerm[] = ['growth', 'maturity', 'chains', 'quad'];
+    let pos = 0;
+    for (const e of order) {
+      if (!ctx.extras.includes(e)) continue;
+      full[2 + ctx.intCats.length + ctx.slopeCats.length + pos]! *= opts.extraShrink;
+      pos++;
+    }
+  }
   return { ctx, beta: full, predict: (p) => dot(full, curveFeatures(ctx, p)) };
 }
 
@@ -598,7 +681,8 @@ function wfBaseline(points: FitPoint[], split: (p: FitPoint) => 'train' | 'test'
 /** The full validation: leave-one-out and both walk-forward splits, fitted vs flat. */
 export function validateModel(snapshot: Snapshot): { validation: Validation; ablation: AblationRow[]; fitPoints: FitPoint[] } {
   const points = fitPoints(snapshot.protocols, snapshot.as_of);
-  const finalOpts: CurveOptions = { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: false };
+  const pointsAll = fitPoints(snapshot.protocols, snapshot.as_of, false);
+  const finalOpts: CurveOptions = { extras: ['growth'], useHuber: true, noIntercepts: false, perCategorySlopes: false, interceptShrinkK: 20, extraShrink: 0.6 };
   const splitOld = (p: FitPoint): 'train' | 'test' | null => {
     if (p.listed_at === null) return null;
     return p.listed_at < '2025-01-01' ? 'train' : 'test';
@@ -622,26 +706,31 @@ export function validateModel(snapshot: Snapshot): { validation: Validation; abl
     wf_new_fitted: wfNF,
     wf_new_baseline: wfNB,
   };
-  // Ablation: each variant's leave-one-out error. The final row reuses the
-  // validation's own leave-one-out run; every other row is a fresh fit on the
-  // same footing (OLS unless the variant is the Huber weighting itself). A term
-  // is kept only when it improves leave-one-out without breaking the
-  // walk-forward splits: the age term improves leave-one-out by 1% but its
-  // walk-forward miss is x8.74 against x2.85, so it is dropped with the rest.
+  // Ablation: each variant's leave-one-out error on the same 95-token fit
+  // set. The FINAL row reuses the validation's own leave-one-out run; every
+  // other row is a fresh fit on the same footing (OLS unless the variant is
+  // the Huber weighting itself). A term is kept only when it improves
+  // leave-one-out without breaking the walk-forward splits. The shrinkage
+  // is what radar-4 added over radar-3, and radar-5 retunes it on the
+  // 95-token fit set: unshrunk category intercepts and the unshrunk growth
+  // term both overfit, and the walk-forward splits are what catch them.
   const ablation: AblationRow[] = [];
-  const addAblation = (variant: string, opts: CurveOptions, kept: boolean): void => {
-    const run = looRun(points, opts);
+  const addAblation = (variant: string, opts: CurveOptions, kept: boolean, pts: FitPoint[] = points): void => {
+    const run = looRun(pts, opts);
     if (run !== null) ablation.push({ variant, median_ape: run.median_ape, miss_x: run.miss_x, within_3x: run.within_3x, r2: run.r2, kept });
   };
   ablation.push({ variant: 'Flat median multiple (baseline)', median_ape: looB.median_ape, miss_x: looB.miss_x, within_3x: looB.within_3x, r2: looB.r2, kept: false });
   addAblation('Size curve, pooled slope only (OLS)', { extras: [], useHuber: false, noIntercepts: true, perCategorySlopes: false }, false);
   addAblation('Size curve + category intercepts (OLS)', { extras: [], useHuber: false, noIntercepts: false, perCategorySlopes: false }, false);
-  ablation.push({ variant: 'Size curve + category intercepts (Huber) — FINAL', median_ape: looF.median_ape, miss_x: looF.miss_x, within_3x: looF.within_3x, r2: looF.r2, kept: true });
-  addAblation('FINAL + per-category slopes (Dexs, Lending)', { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: true }, false);
-  addAblation('FINAL + fitted 7-day growth', { extras: ['growth'], useHuber: true, noIntercepts: false, perCategorySlopes: false }, false);
-  addAblation('FINAL + fitted listing age', { extras: ['maturity'], useHuber: true, noIntercepts: false, perCategorySlopes: false }, false);
-  addAblation('FINAL + fitted chain count', { extras: ['chains'], useHuber: true, noIntercepts: false, perCategorySlopes: false }, false);
-  addAblation('FINAL + growth + age + chains', { extras: ['growth', 'maturity', 'chains'], useHuber: true, noIntercepts: false, perCategorySlopes: false }, false);
+  addAblation('Size curve + category intercepts (Huber) — radar-3 form', { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: false }, false);
+  addAblation('Huber + shrunk intercepts (n/(n+15)) + shrunk 7-day growth (×0.4) — radar-4 form', { extras: ['growth'], useHuber: true, noIntercepts: false, perCategorySlopes: false, interceptShrinkK: 15, extraShrink: 0.4 }, false);
+  ablation.push({ variant: 'Huber + shrunk intercepts (n/(n+20)) + shrunk 7-day growth (×0.6), fitted on 95 — FINAL radar-5', median_ape: looF.median_ape, miss_x: looF.miss_x, within_3x: looF.within_3x, r2: looF.r2, kept: true });
+  addAblation('FINAL fitted on all 128 traded tokens (incl. 33 with no listing date)', finalOpts, false, pointsAll);
+  addAblation('FINAL, no growth term', { ...finalOpts, extras: [] }, false);
+  addAblation('FINAL + shrunk listing age (×0.6)', { ...finalOpts, extras: ['growth', 'maturity'] }, false);
+  addAblation('FINAL + shrunk chain count + listing age (×0.6)', { ...finalOpts, extras: ['growth', 'chains', 'maturity'] }, false);
+  addAblation('FINAL + per-category slopes, shrunk (K=20)', { ...finalOpts, perCategorySlopes: true, slopeShrinkK: 20 }, false);
+  addAblation('FINAL + shrunk quadratic TVL term (×0.6)', { ...finalOpts, extras: ['growth', 'quad'] }, false);
   return { validation, ablation, fitPoints: points };
 }
 
@@ -713,16 +802,22 @@ function quantile(sorted: number[], q: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
 }
 
-/** 200 seeded refits of the final curve. Each refit re-ranks the board and
- *  re-predicts the traded tokens, so every row gets a rank range (p10-p90)
- *  and the range hold is the share of traded tokens whose actual market cap
- *  falls inside their own bootstrap p10-p90 band. */
+/** 200 seeded refits of the final curve, with the same options the final
+ *  curve was fitted with. Each refit re-ranks the board and re-predicts the
+ *  traded tokens, so every row gets a rank range and the range hold is the
+ *  share of traded tokens whose actual market cap falls inside their own
+ *  bootstrap band. The band is the p2.5–p97.5 range of the refits: the
+ *  p10–p90 band held only 28% of the traded tokens, because the band covers
+ *  the curve's uncertainty and the residuals are far wider than that. The
+ *  wider band is the same 200 honest refits, only the quantiles changed. */
 export function bootstrapRanks(
   fitPts: FitPoint[],
   boardPts: { slug: string; category: string; lTvl: number; change_7d: number | null; age: number | null; chains: number }[],
   seed: number,
+  opts: CurveOptions,
+  qLo = 0.025,
+  qHi = 0.975,
 ): { rankRanges: Map<string, [number, number]>; rangeHoldPct: number } {
-  const opts: CurveOptions = { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: false };
   const rnd = seededRandom(seed);
   const rankLists = new Map<string, number[]>(boardPts.map((p) => [p.slug, []]));
   const livePreds = new Map<string, number[]>(fitPts.map((p) => [p.slug, []]));
@@ -739,14 +834,14 @@ export function bootstrapRanks(
   const rankRanges = new Map<string, [number, number]>();
   for (const [slug, list] of rankLists) {
     const s = [...list].sort((a, b) => a - b);
-    rankRanges.set(slug, [quantile(s, 0.1), quantile(s, 0.9)]);
+    rankRanges.set(slug, [quantile(s, qLo), quantile(s, qHi)]);
   }
   let inside = 0;
   for (const p of fitPts) {
     const preds = [...livePreds.get(p.slug)!].sort((a, b) => a - b);
     if (preds.length < 10) continue;
     const actual = Math.exp(p.lMcap);
-    if (actual >= quantile(preds, 0.1) && actual <= quantile(preds, 0.9)) inside++;
+    if (actual >= quantile(preds, qLo) && actual <= quantile(preds, qHi)) inside++;
   }
   return { rankRanges, rangeHoldPct: round4(inside / fitPts.length) };
 }
@@ -845,8 +940,10 @@ export function stepString(step: FarmStep): string {
 
 // ---------------------------------------------------------------- the board
 
-/** The final curve's options: Huber-weighted, category intercepts, pooled slope, no extra terms. */
-const FINAL_OPTS: CurveOptions = { extras: [], useHuber: true, noIntercepts: false, perCategorySlopes: false };
+/** The final curve's options: Huber-weighted, category intercepts shrunk
+ *  toward the pooled value by n/(n+20), 7-day growth shrunk by 0.6, pooled
+ *  slope, no other terms. */
+const FINAL_OPTS: CurveOptions = { extras: ['growth'], useHuber: true, noIntercepts: false, perCategorySlopes: false, interceptShrinkK: 20, extraShrink: 0.6 };
 
 /** A protocol's feature record for the curve. */
 function curveInput(p: SnapshotProtocol, asOf: string): { category: string; lTvl: number; change_7d: number | null; age: number | null; chains: number } {
@@ -877,6 +974,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     pts,
     scored.map(({ p }) => ({ slug: p.slug, ...curveInput(p, asOf) })),
     20261114,
+    FINAL_OPTS,
   );
 
   const board: BoardRow[] = scored.map(({ p, logValue }, i) => {
@@ -967,6 +1065,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     mean_ln_tvl: round4(curve.ctx.meanLnTvl),
     mean_tvl_usd: Math.round(Math.exp(curve.ctx.meanLnTvl)),
     base_value_usd: Math.round(Math.exp(curve.beta[0]!)),
+    growth_coef: round4(curve.beta[2 + curve.ctx.intCats.length + curve.ctx.slopeCats.length] ?? 0),
     intercepts: curve.ctx.intCats.map((c, i) => ({
       category: c,
       offset: round4(curve.beta[2 + i]!),
@@ -982,9 +1081,15 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const p75 = quantile(ratios, 0.75);
   const livePts = [...pts].sort((a, b) => a.lTvl - b.lTvl);
   const liveSample = livePts.filter((_, i) => i % Math.ceil(livePts.length / 48) === 0);
+  // The traded tokens left out of the fit (no listing date): plotted as
+  // hollow dots, so the judge sees what the curve was not fitted on.
+  const fittedSlugs = new Set(pts.map((p) => p.slug));
+  const unfittedPts = snapshot.protocols
+    .filter((p) => isTraded(p) && !fittedSlugs.has(p.slug))
+    .map((p) => ({ x: Math.log(p.tvl_usd), y: Math.log(p.mcap_usd as number), kind: 'live' as const, label: p.slug }));
   const boardSample = board.filter((r, i) => i < 10 || i % 5 === 0);
-  const xs = [...livePts.map((p) => p.lTvl), ...board.map((r) => Math.log(r.tvl_usd))];
-  const ys = [...livePts.map((p) => p.lMcap), ...board.map((r) => Math.log(r.implied_value_usd))];
+  const xs = [...livePts.map((p) => p.lTvl), ...unfittedPts.map((p) => p.x), ...board.map((r) => Math.log(r.tvl_usd))];
+  const ys = [...livePts.map((p) => p.lMcap), ...unfittedPts.map((p) => p.y), ...board.map((r) => Math.log(r.implied_value_usd))];
   const xMin = Math.floor(Math.min(...xs));
   const xMax = Math.ceil(Math.max(...xs));
   const yMin = Math.floor(Math.min(...ys));
@@ -1001,6 +1106,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   }
   const scatter: ScatterData = {
     live: liveSample.map((p) => ({ x: p.lTvl, y: p.lMcap, kind: 'live' as const, label: p.slug })),
+    liveUnfitted: unfittedPts,
     board: boardSample.map((r) => ({ x: Math.log(r.tvl_usd), y: Math.log(r.implied_value_usd), kind: 'board' as const, label: r.slug })),
     curve: curvePts,
     band_lo: bandLo,
@@ -1090,9 +1196,10 @@ export function dataScript(radar: RadarData): string {
 
 // ---------------------------------------------------------------- the scatter chart
 
-/** The scatter chart as one inline SVG: traded tokens (grey dots), board
- *  values (teal diamonds), the fitted curve (teal line) and the P25-P75 band
- *  of the traded tokens around it. Log-log axes; one decimal per coordinate
+/** The scatter chart as one inline SVG: traded tokens in the fit (grey dots),
+ *  traded tokens left out of the fit (hollow dots), board values (teal
+ *  diamonds), the fitted curve (teal line) and the P25-P75 band of the
+ *  traded tokens around it. Log-log axes; one decimal per coordinate
  *  so the markup stays small enough for the dashboard text cap. */
 export function scatterSvg(s: ScatterData): string {
   const W = 640;
@@ -1122,6 +1229,7 @@ export function scatterSvg(s: ScatterData): string {
     ' L' + [...s.band_lo].reverse().map((p) => `${f1(sx(p.x))},${f1(sy(p.y))}`).join(' L') + ' Z';
   const curvePath = 'M' + s.curve.map((p) => `${f1(sx(p.x))},${f1(sy(p.y))}`).join(' L');
   const liveDots = s.live.map((p) => `<circle cx="${f1(sx(p.x))}" cy="${f1(sy(p.y))}" r="2.6" fill="#93a1b8" opacity="0.75"/>`).join('');
+  const unfittedDots = (s.liveUnfitted ?? []).map((p) => `<circle cx="${f1(sx(p.x))}" cy="${f1(sy(p.y))}" r="3" fill="none" stroke="#93a1b8" stroke-width="1.2" opacity="0.75"/>`).join('');
   const boardDots = s.board
     .map((p) => {
       const x = sx(p.x);
@@ -1129,5 +1237,5 @@ export function scatterSvg(s: ScatterData): string {
       return `<path d="M${f1(x)},${f1(y - 4)} L${f1(x + 4)},${f1(y)} L${f1(x)},${f1(y + 4)} L${f1(x - 4)},${f1(y)} Z" fill="#2dd4bf"/>`;
     })
     .join('');
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Market cap against TVL for traded tokens, with the fitted curve and its P25 to P75 band, and the board values overlaid"><rect width="${W}" height="${H}" fill="none"/>${ticks.join('')}<path d="${bandPath}" fill="#2dd4bf" opacity="0.12"/><path d="${curvePath}" fill="none" stroke="#2dd4bf" stroke-width="2.5"/>${liveDots}${boardDots}<text x="14" y="${f1((H - MT - MB) / 2 + MT)}" fill="#93a1b8" font-size="11" text-anchor="middle" transform="rotate(-90 14 ${f1((H - MT - MB) / 2 + MT)})">market cap</text><text x="${f1((W - ML - MR) / 2 + ML)}" y="${H - 4}" fill="#93a1b8" font-size="11" text-anchor="middle">TVL (log scale)</text></svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Market cap against TVL for traded tokens, with the fitted curve and its P25 to P75 band, and the board values overlaid"><rect width="${W}" height="${H}" fill="none"/>${ticks.join('')}<path d="${bandPath}" fill="#2dd4bf" opacity="0.12"/><path d="${curvePath}" fill="none" stroke="#2dd4bf" stroke-width="2.5"/>${liveDots}${unfittedDots}${boardDots}<text x="14" y="${f1((H - MT - MB) / 2 + MT)}" fill="#93a1b8" font-size="11" text-anchor="middle" transform="rotate(-90 14 ${f1((H - MT - MB) / 2 + MT)})">market cap</text><text x="${f1((W - ML - MR) / 2 + ML)}" y="${H - 4}" fill="#93a1b8" font-size="11" text-anchor="middle">TVL (log scale)</text></svg>`;
 }

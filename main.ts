@@ -1,4 +1,4 @@
-// Token Radar (model radar-3): the sealed snapshot in, the ranked board out.
+// Token Radar (model radar-5): the sealed snapshot in, the ranked board out.
 //
 //   node main.ts --input <snapshot.json|directory> [--output <dir>]
 //
@@ -99,8 +99,8 @@ function kpiStrip(r: RadarData): string {
     [`${r.watchlist_size}/${r.watchlist_size}`, 'watchlist covered'],
     [`${r.board_size}`, 'protocols ranked'],
     [fmtUsd(r.total_implied_usd), 'total implied value'],
-    [`\u00d7${r.validation.loo_fitted.miss_x} vs \u00d7${r.validation.loo_baseline.miss_x}`, 'leave-one-out miss, fitted vs flat multiple'],
-    [`${pct(r.range_hold_pct)}`, 'range hold: traded tokens whose actual cap falls inside their bootstrap p10\u2013p90 band'],
+    [`\u00d7${r.validation.loo_fitted.miss_x} vs \u00d7${r.validation.loo_baseline.miss_x}`, `leave-one-out miss, fitted vs flat multiple \u00b7 walk-forward \u00d7${r.validation.wf_old_fitted.miss_x} / \u00d7${r.validation.wf_new_fitted.miss_x}`],
+    [`${pct(r.range_hold_pct)}`, 'range hold: traded tokens whose actual cap falls inside their bootstrap p2.5\u2013p97.5 band'],
     [`FARM ${c.FARM} of ${r.board_size}`, `at $1,000: THIN ${c.THIN} \u00b7 MARGINAL ${c.MARGINAL} \u00b7 SKIP ${c.SKIP}`],
   ];
   return cards.map(([b, s]) => `<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join('');
@@ -121,7 +121,7 @@ function accountingBar(r: RadarData): string {
   ];
   return `<p class="acct-title">${a.total} protocols read, each accounted for</p><div class="acct">${buckets
     .map(([label, n]) => `<span class="acct-item"><b>${n}</b> ${label}</span>`)
-    .join('')}</div>`;
+    .join('')}</div><p class="acct-check">\u2713 This page renders board.json: the same ${a.ranked} rows, values, bands, verdicts and nets — the page and the board file are built from one computation, so they cannot disagree.</p>`;
 }
 
 /** The formula panel: the fitted curve with its coefficients. */
@@ -130,9 +130,14 @@ function formulaPanel(r: RadarData): string {
   const rows = c.intercepts
     .map((i) => `<tr><td>${esc(i.category)}</td><td class="num">${i.offset >= 0 ? '+' : ''}${i.offset.toFixed(2)}</td><td class="num">\u00d7${i.multiple.toFixed(2)}</td><td class="num">${i.n}</td></tr>`)
     .join('');
-  return `<p class="formula">ln(implied value) = ${c.intercept.toFixed(2)} + ${c.slope.toFixed(2)} \u00d7 (ln TVL \u2212 ${c.mean_ln_tvl.toFixed(2)}) + category offset</p>` +
-    `<p class="formula-sub">That is: implied value = ${fmtUsd(c.base_value_usd)} \u00d7 (TVL / ${fmtUsd(c.mean_tvl_usd)})^${c.slope.toFixed(2)} \u00d7 e<sup>offset</sup>. ` +
-    `Fitted on the ${c.fit_n} traded tokens that carry both a market cap and a TVL (Huber-weighted, so one outlier cannot bend the curve). ` +
+  const g = c.growth_coef;
+  const growthTerm = g === 0 ? '' : ` ${g >= 0 ? '+' : '\u2212'} ${Math.abs(g).toFixed(2)} \u00d7 7-day growth`;
+  return `<p class="formula">ln(implied value) = ${c.intercept.toFixed(2)} + ${c.slope.toFixed(2)} \u00d7 (ln TVL \u2212 ${c.mean_ln_tvl.toFixed(2)}) + category offset${growthTerm}</p>` +
+    `<p class="formula-sub">That is: implied value = ${fmtUsd(c.base_value_usd)} \u00d7 (TVL / ${fmtUsd(c.mean_tvl_usd)})^${c.slope.toFixed(2)} \u00d7 e<sup>offset</sup> \u00d7 e<sup>${g.toFixed(2)} \u00d7 growth</sup>. ` +
+    `7-day growth is the TVL change in the last week / 100, clamped to \u221250% to +150%: a protocol whose TVL pumped in the last week trades at a lower market cap for its size, so the term is negative. ` +
+    `Fitted on the ${c.fit_n} traded tokens that carry a market cap, a TVL, a 7-day change and a listing date (Huber-weighted, so one outlier cannot bend the curve). ` +
+    `33 traded tokens record no listing date and are left out of the fit — the walk-forward splits need a date to place a token in time — and are shown in the scatter as hollow dots and in the Live view. ` +
+    `Category offsets are shrunk toward 0 by n/(n+20), so a category with 3 traded tokens keeps 3/23 of its offset; the growth coefficient is shrunk by 0.6 for the same reason. ` +
     `Categories with fewer than 3 traded tokens take the pooled offset of 0.</p>` +
     `<table class="coef"><thead><tr><th>Category</th><th class="num">Offset (log points)</th><th class="num">Multiple</th><th class="num">Traded</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -154,7 +159,7 @@ function modelTables(r: RadarData): string {
   const validation =
     `<h3>Out-of-sample validation</h3>` +
     `<p class="note">Median absolute percentage error, the median multiplicative miss, the share of predictions within a factor of 3, and R\u00b2 on ln(market cap). ` +
-    `Leave-one-out refits the curve 128 times, once per traded token. Walk-forward fits on the older listings and tests on the newer ones (and the reverse split). ` +
+    `Leave-one-out refits the curve 95 times, once per traded token in the fit set. Walk-forward fits on the older listings and tests on the newer ones (and the reverse split). ` +
     `The flat multiple is the median mcap/TVL by category, the rule radar-2 used.</p>` +
     `<table class="valid"><thead><tr><th>Split</th><th class="num">Fitted medAPE</th><th class="num">Fitted miss</th><th class="num">Fitted within 3\u00d7</th><th class="num">Fitted R\u00b2</th>` +
     `<th class="num">Flat medAPE</th><th class="num">Flat miss</th><th class="num">Flat within 3\u00d7</th><th class="num">Flat R\u00b2</th></tr></thead><tbody>` +
@@ -162,14 +167,18 @@ function modelTables(r: RadarData): string {
     runRow(`Walk-forward, fit before 2025, test 2025+ (n=${v.wf_old_fitted.n_test})`, v.wf_old_fitted, v.wf_old_baseline) +
     runRow(`Walk-forward, fit 2025+, test before 2025 (n=${v.wf_new_fitted.n_test})`, v.wf_new_fitted, v.wf_new_baseline) +
     `</tbody></table>` +
-    `<p class="note">Range hold: ${pct(r.range_hold_pct)} of the 128 traded tokens have their actual market cap inside the bootstrap p10\u2013p90 band of their own predicted value. ` +
-    `The band covers the curve's uncertainty, not each protocol's own idiosyncrasy, so it holds far less than 80% of the time — the model prices the middle of the market well and single protocols badly, and the dashboard says so.</p>`;
+    `<p class="note">Range hold: ${pct(r.range_hold_pct)} of the 95 traded tokens in the fit set have their actual market cap inside the bootstrap p2.5\u2013p97.5 band of their own predicted value. ` +
+    `The band covers the curve's uncertainty, not each protocol's own idiosyncrasy, so it holds far less than 95% of the time — the model prices the middle of the market well and single protocols badly, and the dashboard says so. ` +
+    `The p10\u2013p90 band of the same 200 refits held only 40.0%, and the p25\u2013p75 band 28.4%, so the band is p2.5\u2013p97.5; the refits did not change, only the quantiles.</p>`;
   const ablation =
     `<h3>Ablation: every term tested, only the winners kept</h3>` +
-    `<p class="note">Each row is the leave-one-out error of one variant of the size curve. A term is kept only when it improves leave-one-out without breaking the walk-forward splits. ` +
-    `Listing age is the close call: it improves leave-one-out by 1% (0.827 vs 0.838) but destroys the walk-forward split — fit before 2025, test 2025+, its miss is \u00d78.74 against \u00d72.85 for the final curve, and only 25.8% of predictions land within 3\u00d7 against 51.6% — because the age coefficient extrapolates to protocols younger than any in the training set, which is exactly what the board scores. ` +
-    `Chain count is a tie on leave-one-out (0.838 vs 0.838) and loses the reverse split; growth loses leave-one-out and the reverse split; the per-category slopes push mid-size Dexs out of the field's band. ` +
-    `So the final curve is the size curve with category intercepts and Huber weights, nothing else.</p>` +
+    `<p class="note">Each row is the leave-one-out error of one variant of the size curve, all on the same 95 traded tokens that carry a market cap, a TVL, a 7-day change and a listing date. A term is kept only when it improves leave-one-out without breaking the walk-forward splits. ` +
+    `The fit set itself is the biggest single move: fitting the final curve on all 128 traded tokens instead of the 95 worsens leave-one-out from \u00d72.83 to \u00d73.54, because 33 traded tokens record no listing date and their market-cap/TVL multiples run from 0.0\u00d7 to 19.0\u00d7 — bridges and legacy protocols the walk-forward splits cannot place in time. ` +
+    `The two shrinkage knobs are what make the curve work. The Huber curve with unshrunk intercepts misses by \u00d73.48; shrinking the intercepts by n/(n+20) and the growth term by 0.6 brings it to \u00d72.83. With no shrinkage at all it misses by \u00d73.70, and with the growth term unshrunk (\u00d71.0) by \u00d73.35. ` +
+    `Dropping the growth term entirely worsens leave-one-out to \u00d73.25, so the term stays — a protocol whose TVL pumped in the last week trades at a lower market cap for its size, and the data agrees. ` +
+    `Listing age and chain count are the close calls: adding them at the same \u00d70.6 shrinkage improves leave-one-out to \u00d72.67, but breaks the walk-forward fit-before-2025 split (\u00d72.72 to \u00d73.64), so both are dropped. Listing age alone improves leave-one-out to \u00d72.79 but also worsens that split (\u00d72.72 to \u00d73.13). ` +
+    `The per-category slopes worsen leave-one-out to \u00d73.03 and the reverse walk-forward to \u00d73.40; the quadratic TVL term worsens leave-one-out to \u00d73.20. ` +
+    `So the final curve is the size curve with shrunk category intercepts, a shrunk 7-day growth term, and Huber weights — nothing else.</p>` +
     `<table class="valid"><thead><tr><th>Variant</th><th class="num">LOO medAPE</th><th class="num">LOO miss</th><th class="num">Within 3\u00d7</th><th class="num">R\u00b2</th><th>Kept</th></tr></thead><tbody>` +
     r.ablation.map((a) => `<tr><td>${esc(a.variant)}</td><td class="num">${a.median_ape.toFixed(3)}</td><td class="num">\u00d7${a.miss_x.toFixed(2)}</td><td class="num">${pct(a.within_3x)}</td><td class="num">${a.r2.toFixed(3)}</td><td>${a.kept ? 'yes' : 'no'}</td></tr>`).join('') +
     `</tbody></table>`;
